@@ -23,6 +23,9 @@ OPTIONS
 \--chrome
 :   Show JSON style output used by Google chrome tracing facility.
 
+\--flame-graph
+:   Show FlameGraph style output (svg) used by modern web browsers.
+
 
 EXAMPLE
 =======

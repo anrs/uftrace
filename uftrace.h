@@ -172,6 +172,7 @@ struct opts {
 	bool task_newline;
 	bool chrome_trace;
 	bool comment;
+	bool flame_graph;
 	bool libmcount_single;
 	bool kernel_skip_out;
 };

@@ -635,6 +635,126 @@ json_footer:
 	}
 }
 
+struct fg_node {
+	struct sym *sym;
+	int calls;
+	char *name;
+	struct fg_node *parent;
+	struct list_head siblings;
+	struct list_head children;
+};
+
+static struct fg_node fg_root = {
+	.siblings = LIST_HEAD_INIT(fg_root.siblings),
+	.children = LIST_HEAD_INIT(fg_root.children),
+};
+
+static struct fg_node * add_fg_node(struct fg_node *parent, struct sym *sym)
+{
+	struct fg_node *child;
+
+	list_for_each_entry(child, &parent->children, siblings) {
+		if (sym == child->sym)
+			break;
+	}
+
+	if (list_no_entry(child, &parent->children, siblings)) {
+		child = xmalloc(sizeof(*child));
+
+		child->sym = sym;
+		child->name = symbol_getname(sym, sym->addr);
+		child->calls = 0;
+		child->parent = parent;
+
+		INIT_LIST_HEAD(&child->children);
+		list_add(&child->siblings, &parent->children);
+	}
+
+	child->calls++;
+	return child;
+}
+
+static void print_flame_graph(struct fg_node *node, struct opts *opts)
+{
+	struct fg_node *child;
+
+	if (node->calls) {
+		struct fg_node *parent = node;
+		char *names[opts->max_stack];
+		char *buf, *ptr;
+		int i = 0;
+		size_t len = 0;
+
+		while (parent != &fg_root) {
+			names[i++] = parent->name;
+			len += strlen(parent->name) + 1;
+			parent = parent->parent;
+		}
+
+		buf = ptr = xmalloc(len + 32);
+		while (--i >= 0)
+			ptr += snprintf(ptr, len, "%s;", names[i]);
+		ptr[-1] = ' ';
+		snprintf(ptr, len, "%d", node->calls);
+
+		pr_out("%s\n", buf);
+		free(buf);
+	}
+
+	list_for_each_entry(child, &node->children, siblings)
+		print_flame_graph(child, opts);
+}
+
+static void dump_flame_graph(int argc, char *argv[], struct opts *opts,
+			     struct ftrace_file_handle *handle)
+{
+	int i;
+	struct ftrace_task_handle task;
+	struct fg_node *node;
+
+	for (i = 0; i < handle->info.nr_tid; i++) {
+		int tid = handle->info.tids[i];
+
+		setup_task_handle(handle, &task, tid);
+
+		if (task.fp == NULL)
+			continue;
+
+		node = &fg_root;
+
+		while (!read_task_ustack(handle, &task) && !ftrace_done) {
+			struct ftrace_ret_stack *frs = &task.ustack;
+			struct ftrace_session *sess = find_task_session(tid, frs->time);
+			struct symtabs *symtabs;
+			struct sym *sym = NULL;
+
+			if (sess) {
+				symtabs = &sess->symtabs;
+				sym = find_symtabs(symtabs, frs->addr);
+			}
+
+			if (sym == NULL)
+				goto next;
+
+			if (frs->type == FTRACE_ENTRY)
+				node = add_fg_node(node, sym);
+			else if (frs->type == FTRACE_EXIT)
+				node = node->parent;
+			else
+				node = &fg_root;
+
+			if (unlikely(node == NULL))
+				node = &fg_root;
+
+next:
+			/* force re-read in read_task_ustack() */
+			task.valid = false;
+		}
+	}
+
+	print_flame_graph(&fg_root, opts);
+}
+
 int command_dump(int argc, char *argv[], struct opts *opts)
 {
 	int ret;
@@ -655,6 +775,8 @@ int command_dump(int argc, char *argv[], struct opts *opts)
 
 	if (opts->chrome_trace)
 		dump_chrome_trace(argc, argv, opts, &handle);
+	else if (opts->flame_graph)
+		dump_flame_graph(argc, argv, opts, &handle);
 	else
 		dump_raw(argc, argv, opts, &handle);
 
